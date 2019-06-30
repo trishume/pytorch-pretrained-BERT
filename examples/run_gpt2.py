@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
+import torch
 
 import argparse
 import logging
 from tqdm import trange
 
-import torch
 import torch.nn.functional as F
 import numpy as np
 
 from pytorch_pretrained_bert import GPT2LMHeadModel, GPT2Tokenizer
+from timeit import default_timer as timer
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
@@ -93,6 +94,7 @@ def run_model():
             context_tokens = enc.encode(raw_text)
             generated = 0
             for _ in range(args.nsamples // args.batch_size):
+                start = timer()
                 out = sample_sequence(
                     model=model, length=args.length,
                     context=context_tokens,
@@ -101,6 +103,8 @@ def run_model():
                     temperature=args.temperature, top_k=args.top_k, device=device
                 )
                 out = out[:, len(context_tokens):].tolist()
+                end = timer()
+                print("time: ", end - start)
                 for i in range(args.batch_size):
                     generated += 1
                     text = enc.decode(out[i])

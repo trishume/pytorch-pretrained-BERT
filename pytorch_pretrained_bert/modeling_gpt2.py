@@ -238,7 +238,13 @@ class Conv1D(nn.Module):
 
     def forward(self, x):
         size_out = x.size()[:-1] + (self.nf,)
-        x = torch.addmm(self.bias, x.view(-1, x.size(-1)), self.weight)
+        # bias is [b]
+        # weight is [a, b]
+        # x is [batch_size, batch_seq_len, a]
+        # gpt2-medium has (a,b)=[(1024,3072),(1024,1024),(1024,4096),(4096,1024)] * 24 layers
+        view = x.view(-1, x.size(-1))
+        # print("conv", self.bias.size(), self.weight.size(), x.size(), view.size())
+        x = torch.addmm(self.bias, view, self.weight)
         x = x.view(*size_out)
         return x
 
@@ -280,7 +286,10 @@ class Attention(nn.Module):
         self.n_head = self.n_head - len(heads)
 
     def _attn(self, q, k, v, head_mask=None):
+        # print("attn", q.size(), k.size())
         w = torch.matmul(q, k)
+        # w = torch.zeros(k.size(0), 16, q.size(-2), k.size(-1), dtype=k.dtype)
+        # print(w.size(), q.size(), k.size())
         if self.scale:
             w = w / math.sqrt(v.size(-1))
         nd, ns = w.size(-2), w.size(-1)
@@ -294,6 +303,7 @@ class Attention(nn.Module):
         if head_mask is not None:
             w = w * head_mask
 
+        # print("attn2", w.size(), v.size())
         if self.output_attentions:
             return w, torch.matmul(w, v)
         return torch.matmul(w, v)
@@ -348,6 +358,8 @@ class MLP(nn.Module):
         self.dropout = nn.Dropout(config.resid_pdrop)
 
     def forward(self, x):
+        # return x
+        # print(x.size())
         h = self.act(self.c_fc(x))
         h2 = self.c_proj(h)
         return self.dropout(h2)
@@ -391,7 +403,7 @@ class GPT2LMHead(nn.Module):
 
     def set_embeddings_weights(self, model_embeddings_weights, predict_special_tokens=True):
         self.predict_special_tokens = predict_special_tokens
-        self.decoder.weight = model_embeddings_weights  # Tied weights
+        self.decoder.weight = Parameter(model_embeddings_weights.clone().detach())  # Tied weights
 
     def forward(self, hidden_state):
         lm_logits = self.decoder(hidden_state)
@@ -829,7 +841,8 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
         self.transformer.set_num_special_tokens(num_special_tokens)
         self.lm_head.set_embeddings_weights(self.transformer.wte.weight, predict_special_tokens=predict_special_tokens)
 
-    def forward(self, input_ids, position_ids=None, token_type_ids=None, lm_labels=None, past=None, head_mask=None):
+    def forward(self, input_ids, past, position_ids=None, token_type_ids=None, lm_labels=None, head_mask=None):
+        if past is not None: past = torch.unbind(past)
         transformer_output = self.transformer(input_ids, position_ids, token_type_ids, past, head_mask)
         if self.transformer.output_attentions:
             all_attentions, hidden_states, presents = transformer_output
@@ -849,7 +862,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             return loss
         if self.transformer.output_attentions:
             return all_attentions, lm_logits, presents
-        return lm_logits, presents
+        return lm_logits, torch.stack(presents)
 
 
 class GPT2DoubleHeadsModel(GPT2PreTrainedModel):
@@ -910,7 +923,7 @@ class GPT2DoubleHeadsModel(GPT2PreTrainedModel):
         super(GPT2DoubleHeadsModel, self).__init__(config)
         self.transformer = GPT2Model(config, output_attentions=output_attentions,
                                              keep_multihead_output=keep_multihead_output)
-        self.lm_head = GPT2LMHead(self.transformer.wte.weight, config)
+        self.lm_head = GPT2LMHead(copy.deepcopy(self.transformer.wte.weight), config)
         self.multiple_choice_head = GPT2MultipleChoiceHead(config)
         self.apply(self.init_weights)
 
